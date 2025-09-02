@@ -1,102 +1,188 @@
 #!/bin/bash
-# --- MODO DEBUG: Muestra cada comando que se ejecuta en los logs ---
+# Modo estricto + trazas
+set -Eeuo pipefail
+IFS=$'\n\t'
 set -x
 
-source /venv/main/bin/activate
-COMFYUI_DIR=${WORKSPACE}/ComfyUI
+source /venv/main/bin/activate || true
 
-# --- PAQUETES DEL SISTEMA (APT) ---
+: "${WORKSPACE:=${HOME}}"
+COMFYUI_DIR="${WORKSPACE}/ComfyUI"
+
+# --- Paquetes (puedes añadir los tuyos) ---
 APT_PACKAGES=(
-    "jq"
-    "aria2"
+  "git" "wget" "jq" "ca-certificates" "curl"
 )
 
-# --- PAQUETES DE PYTHON (PIP) ---
-PIP_PACKAGES=()
+PIP_PACKAGES=(
+  # "package-1"
+  # "package-2"
+)
 
-# --- NODOS PERSONALIZADOS ---
 NODES=(
-    "https://github.com/ltdrdata/ComfyUI-Manager"
-    "https://github.com/cubiq/ComfyUI_essentials"
-    "https://github.com/WASasquatch/was-node-suite-comfyui"
-    "https://github.com/pythongosssss/ComfyUI-Custom-Scripts"
+  # "https://github.com/ltdrdata/ComfyUI-Manager"
+  # "https://github.com/cubiq/ComfyUI_essentials"
 )
 
-# --- WORKFLOWS ---
 WORKFLOWS=(
-    "https://gist.githubusercontent.com/rgd87/566887570415a7f960920d0f509e5399/raw/flux_dev_lora_example.json"
+  "https://gist.githubusercontent.com/robballantyne/f8cb692bdcd89c96c0bd1ec0c969d905/raw/2d969f732d7873f0e1ee23b2625b50f201c722a5/flux_dev_example.json"
 )
 
-# --- LISTAS DE MODELOS (se rellenarán automáticamente) ---
-CHECKPOINT_MODELS=()
 CLIP_MODELS=(
-    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors"
-    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
-)
-VAE_MODELS=()
-LORA_MODELS=(
-    "https://civitai.com/api/download/models/122359" # Detail Tweaker XL
-    "https://civitai.com/api/download/models/262131" # Perfect Light and Shadow
-    "https://civitai.com/api/download/models/132957" # XL More Art
+  "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors"
+  "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
 )
 
+UNET_MODELS=(
+)
 
-### NO EDITAR DEBAJO DE ESTA LÍNEA ###
+VAE_MODELS=(
+)
+
+### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
 
 function provisioning_start() {
     provisioning_print_header
-    # --- PASO 1: Instalar paquetes del sistema PRIMERO ---
     provisioning_get_apt_packages
 
-    printf "Actualizando ComfyUI y dependencias...\n"
-    cd ${COMFYUI_DIR} && git pull && pip install -r requirements.txt
-    cd ${WORKSPACE}
+    # Clonar/actualizar ComfyUI si es necesario (la base lo asume existente)
+    if [[ -d "${COMFYUI_DIR}/.git" ]]; then
+        printf "Updating ComfyUI...\n"
+        ( cd "${COMFYUI_DIR}" && git pull --rebase )
+    else
+        printf "Cloning ComfyUI...\n"
+        git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "${COMFYUI_DIR}"
+    fi
 
     provisioning_get_nodes
     provisioning_get_pip_packages
 
-    workflows_dir="${COMFYUI_DIR}/user/default/workflows"
+    local workflows_dir="${COMFYUI_DIR}/user/default/workflows"
     mkdir -p "${workflows_dir}"
     provisioning_get_files "${workflows_dir}" "${WORKFLOWS[@]}"
 
-    local MODEL_FILENAME=""
+    # Get licensed models if HF_TOKEN set & valid
     if provisioning_has_valid_hf_token; then
-        echo "Token de Hugging Face detectado y válido. Descargando modelo FLUX.1-dev-fp8..."
-        MODEL_FILENAME="flux1-dev-fp8.safetensors"
-        CHECKPOINT_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/${MODEL_FILENAME}")
+        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors")
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors")
     else
-        echo "No se encontró un token de HF válido. Descargando modelo público FLUX.1-schnell..."
-        MODEL_FILENAME="flux1-schnell.safetensors"
-        CHECKPOINT_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/${MODEL_FILENAME}")
+        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors")
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors")
+        # Solo sed si el workflow existe
+        if [[ -f "${workflows_dir}/flux_dev_example.json" ]]; then
+          sed -i 's/flux1-dev\.safetensors/flux1-schnell.safetensors/g' "${workflows_dir}/flux_dev_example.json"
+        fi
     fi
 
-    # Modificar el workflow JSON
-    local workflow_file="${workflows_dir}/flux_dev_lora_example.json"
-    if [ -f "$workflow_file" ]; then
-        echo "Modificando workflow JSON con el modelo: ${MODEL_FILENAME}"
-        jq --arg model_name "$MODEL_FILENAME" '(.nodes[] | select(.type == "CheckpointLoaderSimple").widgets_values) |= [ $model_name ]' "$workflow_file" > "${workflow_file}.tmp" && mv "${workflow_file}.tmp" "$workflow_file"
+    # Carpetas de modelos (y symlink por compatibilidad con "checkpoints")
+    mkdir -p "${COMFYUI_DIR}/models/unet" "${COMFYUI_DIR}/models/vae" "${COMFYUI_DIR}/models/clip"
+    if [[ ! -e "${COMFYUI_DIR}/models/checkpoints" ]]; then
+      ln -s "${COMFYUI_DIR}/models/unet" "${COMFYUI_DIR}/models/checkpoints" || true
     fi
 
-    # Iniciar todas las descargas
-    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints" "${CHECKPOINT_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/vae" "${VAE_MODELS[@]}"
+    provisioning_get_files "${COMFYUI_DIR}/models/unet" "${UNET_MODELS[@]}"
+    provisioning_get_files "${COMFYUI_DIR}/models/vae"  "${VAE_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip" "${CLIP_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/loras" "${LORA_MODELS[@]}"
 
     provisioning_print_end
-    set +x
 }
 
-# --- FUNCIÓN PARA INSTALAR PAQUETES APT ---
 function provisioning_get_apt_packages() {
     if [[ ${#APT_PACKAGES[@]} -gt 0 ]]; then
-        echo "Instalando paquetes APT: ${APT_PACKAGES[*]}"
-        sudo apt-get update
-        sudo apt-get install -y ${APT_PACKAGES[@]}
+        sudo apt-get update -y
+        sudo apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
+        sudo apt-get clean
     fi
 }
 
-function provisioning_get_pip_packages() { if [[ ${#PIP_PACKAGES[@]} -gt 0 ]]; then pip install --no-cache-dir ${PIP_PACKAGES[@]}; fi; }
-function provisioning_get_nodes() { for repo in "${NODES[@]}"; do dir="${repo##*/}"; path="${COMFYUI_DIR}/custom_nodes/${dir}"; requirements="${path}/requirements.txt"; if [[ -d $path ]]; then if [[ ${AUTO_UPDATE,,} != "false" ]]; then printf "Updating node: %s...\n" "${repo}"; ( cd "$path" && git pull ); if [[ -e $requirements ]]; then pip insta
+function provisioning_get_pip_packages() {
+    if [[ ${#PIP_PACKAGES[@]} -gt 0 ]]; then
+        pip install --no-cache-dir "${PIP_PACKAGES[@]}"
+    fi
+}
+
+function provisioning_get_nodes() {
+    for repo in "${NODES[@]}"; do
+        dir="${repo##*/}"
+        path="${COMFYUI_DIR}/custom_nodes/${dir}"   # <-- slash FIX
+        requirements="${path}/requirements.txt"
+        if [[ -d $path ]]; then
+            if [[ ${AUTO_UPDATE,,} != "false" ]]; then
+                printf "Updating node: %s...\n" "${repo}"
+                ( cd "$path" && git pull )
+                if [[ -e $requirements ]]; then
+                   pip install --no-cache-dir -r "$requirements" || true
+                fi
+            fi
+        else
+            printf "Downloading node: %s...\n" "${repo}"
+            git clone "${repo}" "${path}" --recursive
+            if [[ -e $requirements ]]; then
+                pip install --no-cache-dir -r "${requirements}" || true
+            fi
+        fi
+    done
+}
+
+function provisioning_get_files() {
+    # $1 dest_dir; resto: urls
+    if [[ $# -lt 2 ]]; then return 0; fi
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local arr=("$@")
+    printf "Downloading %s file(s) to %s...\n" "${#arr[@]}" "$dir"
+    for url in "${arr[@]}"; do
+        printf "Downloading: %s\n" "${url}"
+        provisioning_download "${url}" "${dir}"
+        printf "\n"
+    done
+}
+
+function provisioning_print_header() {
+    printf "\n##############################################\n#                                            #\n#          Provisioning container            #\n#                                            #\n#                Please wait                 #\n#                                            #\n# Your container will be ready on completion #\n#                                            #\n##############################################\n\n"
+}
+
+function provisioning_print_end() {
+    printf "\nProvisioning complete:  Application will start now\n\n"
+}
+
+function provisioning_has_valid_hf_token() {
+    [[ -n "${HF_TOKEN:-}" ]] || return 1
+    local url="https://huggingface.co/api/whoami-v2"
+    local response
+    response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" \
+        -H "Authorization: Bearer $HF_TOKEN" \
+        -H "Content-Type: application/json")
+    [[ "$response" -eq 200 ]]
+}
+
+function provisioning_has_valid_civitai_token() {
+    [[ -n "${CIVITAI_TOKEN:-}" ]] || return 1
+    local url="https://civitai.com/api/v1/models?hidden=1&limit=1"
+    local response
+    response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" \
+        -H "Authorization: Bearer $CIVITAI_TOKEN" \
+        -H "Content-Type: application/json")
+    [[ "$response" -eq 200 ]]
+}
+
+# Download from $1 URL to $2 dir (keeps server filename)
+function provisioning_download() {
+    local url="$1"; local destdir="$2"
+    local auth_token=""
+    if [[ -n "${HF_TOKEN:-}" && $url =~ ^https://([a-zA-Z0-9_-]+\.)?huggingface\.co(/|$|\?) ]]; then
+        auth_token="$HF_TOKEN"
+    elif [[ -n "${CIVITAI_TOKEN:-}" && $url =~ ^https://([a-zA-Z0-9_-]+\.)?civitai\.com(/|$|\?) ]]; then
+        auth_token="$CIVITAI_TOKEN"
+    fi
+    if [[ -n $auth_token ]]; then
+        wget --header="Authorization: Bearer $auth_token" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$destdir" "$url"
+    else
+        wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$destdir" "$url"
+    fi
+}
+
+# Allow user to disable provisioning if they started with a script they didn't want
+if [[ ! -f /.noprovisioning ]]; then
+    provisioning_start
+fi
