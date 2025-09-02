@@ -16,12 +16,16 @@ PIP_PACKAGES=(
 )
 
 NODES=(
-    #"https://github.com/ltdrdata/ComfyUI-Manager"
-    #"https://github.com/cubiq/ComfyUI_essentials"
+    "https://github.com/ltdrdata/ComfyUI-Manager"
+    "https://github.com/cubiq/ComfyUI_essentials"
 )
 
 WORKFLOWS=(
     "https://gist.githubusercontent.com/robballantyne/f8cb692bdcd89c96c0bd1ec0c969d905/raw/2d969f732d7873f0e1ee23b2625b50f201c722a5/flux_dev_example.json"
+)
+
+# Renombramos UNET_MODELS a CHECKPOINT_MODELS para mayor claridad
+CHECKPOINT_MODELS=(
 )
 
 CLIP_MODELS=(
@@ -29,14 +33,9 @@ CLIP_MODELS=(
     "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
 )
 
-UNET_MODELS=(
-)
-
 VAE_MODELS=(
 )
 
-# === NUEVO: LoRA ===
-# Añade aquí LoRAs fijas si quieres (opcional). También puedes usar LORA_URLS o /workspace/lora_urls.txt
 LORA_MODELS=(
     # "https://huggingface.co/usuario/repo/resolve/main/mi_lora.safetensors"
     # "https://civitai.com/api/download/models/12345"
@@ -47,6 +46,14 @@ LORA_MODELS=(
 function provisioning_start() {
     provisioning_print_header
     provisioning_get_apt_packages
+
+    # Actualizamos ComfyUI y sus dependencias para evitar warnings y tener los últimos nodos
+    printf "Actualizando ComfyUI y dependencias...\n"
+    cd ${COMFYUI_DIR}
+    git pull
+    pip install -r requirements.txt
+    cd ${WORKSPACE}
+
     provisioning_get_nodes
     provisioning_get_pip_packages
 
@@ -58,17 +65,24 @@ function provisioning_start() {
 
     # Get licensed models if HF_TOKEN set & valid
     if provisioning_has_valid_hf_token; then
-        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors")
+        # --- CAMBIO APLICADO: Descargando la versión FP8 (más ligera y rápida) ---
+        CHECKPOINT_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev-fp8.safetensors")
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors")
+        # Aseguramos que el workflow JSON busque el nombre del modelo fp8 correcto
+        sed -i 's/flux1-dev\.safetensors/flux1-dev-fp8.safetensors/g' "${workflows_dir}/flux_dev_example.json"
     else
-        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors")
+        # Si no hay token, usamos la versión 'schnell' que es pública
+        CHECKPOINT_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors")
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors")
+        # Aseguramos que el workflow JSON busque el modelo 'schnell' correcto
         sed -i 's/flux1-dev\.safetensors/flux1-schnell.safetensors/g' "${workflows_dir}/flux_dev_example.json"
     fi
 
+    # Descargamos el modelo principal en la carpeta correcta 'checkpoints'
     provisioning_get_files \
-        "${COMFYUI_DIR}/models/unet" \
-        "${UNET_MODELS[@]}"
+        "${COMFYUI_DIR}/models/checkpoints" \
+        "${CHECKPOINT_MODELS[@]}"
+
     provisioning_get_files \
         "${COMFYUI_DIR}/models/vae" \
         "${VAE_MODELS[@]}"
@@ -76,20 +90,16 @@ function provisioning_start() {
         "${COMFYUI_DIR}/models/clip" \
         "${CLIP_MODELS[@]}"
 
-    # === NUEVO: agregar LoRAs desde env o archivo ===
     loras_dir="${COMFYUI_DIR}/models/loras"
     mkdir -p "${loras_dir}"
 
-    # 1) Desde variable LORA_URLS (separadas por espacio o salto de línea)
     if [[ -n "${LORA_URLS}" ]]; then
-        # convertir espacios a saltos de línea
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             LORA_MODELS+=("$line")
         done < <(printf "%s" "$LORA_URLS" | tr ' ' '\n')
     fi
 
-    # 2) Desde archivo /workspace/lora_urls.txt (una URL por línea)
     if [[ -f "${WORKSPACE}/lora_urls.txt" ]]; then
         while IFS= read -r url; do
             [[ -z "$url" ]] && continue
@@ -97,7 +107,6 @@ function provisioning_start() {
         done < "${WORKSPACE}/lora_urls.txt"
     fi
 
-    # Descargar LoRAs si hay alguna
     provisioning_get_files \
         "${loras_dir}" \
         "${LORA_MODELS[@]}"
@@ -214,4 +223,3 @@ function provisioning_download() {
 if [[ ! -f /.noprovisioning ]]; then
     provisioning_start
 fi
-
