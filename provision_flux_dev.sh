@@ -39,18 +39,25 @@ LORA_MODELS=()
 
 ### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
 
-function provisioning_start() {
-    provisioning_print_header
-    provisioning_get_apt_packages
-
-    # Clonar/actualizar ComfyUI si falta
-    if [[ -d "${COMFYUI_DIR}/.git" ]]; then
-        printf "Updating ComfyUI...\n"
-        ( cd "${COMFYUI_DIR}" && git pull --rebase )
+# Actualiza ComfyUI de forma segura aunque esté en detached HEAD
+if [[ -d "${COMFYUI_DIR}/.git" ]]; then
+  echo "Updating ComfyUI safely..."
+  (
+    cd "${COMFYUI_DIR}"
+    branch="$(git rev-parse --abbrev-ref HEAD || echo HEAD)"
+    git fetch --all --tags
+    if [[ "$branch" == "HEAD" ]]; then
+      # Forzamos a una rama conocida del remoto
+      git checkout -B master origin/master || git checkout -B main origin/main
     else
-        printf "Cloning ComfyUI...\n"
-        git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "${COMFYUI_DIR}"
+      git pull --ff-only
     fi
+  )
+else
+  echo "Cloning ComfyUI..."
+  git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "${COMFYUI_DIR}"
+fi
+
 
     provisioning_get_nodes
     provisioning_get_pip_packages
