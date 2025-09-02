@@ -9,7 +9,7 @@ source /venv/main/bin/activate || true
 : "${WORKSPACE:=${HOME}}"
 COMFYUI_DIR="${WORKSPACE}/ComfyUI"
 
-# --- Paquetes (puedes añadir los tuyos) ---
+# --- Paquetes necesarios ---
 APT_PACKAGES=(
   "git" "wget" "jq" "ca-certificates" "curl"
 )
@@ -33,11 +33,9 @@ CLIP_MODELS=(
   "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
 )
 
-UNET_MODELS=(
-)
-
-VAE_MODELS=(
-)
+CHECKPOINT_MODELS=()
+VAE_MODELS=()
+LORA_MODELS=()
 
 ### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
 
@@ -45,7 +43,7 @@ function provisioning_start() {
     provisioning_print_header
     provisioning_get_apt_packages
 
-    # Clonar/actualizar ComfyUI si es necesario (la base lo asume existente)
+    # Clonar/actualizar ComfyUI si falta
     if [[ -d "${COMFYUI_DIR}/.git" ]]; then
         printf "Updating ComfyUI...\n"
         ( cd "${COMFYUI_DIR}" && git pull --rebase )
@@ -61,28 +59,25 @@ function provisioning_start() {
     mkdir -p "${workflows_dir}"
     provisioning_get_files "${workflows_dir}" "${WORKFLOWS[@]}"
 
-    # Get licensed models if HF_TOKEN set & valid
+    # Selección de modelo según HF_TOKEN
     if provisioning_has_valid_hf_token; then
-        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors")
+        CHECKPOINT_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors")
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors")
     else
-        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors")
+        CHECKPOINT_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors")
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors")
-        # Solo sed si el workflow existe
         if [[ -f "${workflows_dir}/flux_dev_example.json" ]]; then
           sed -i 's/flux1-dev\.safetensors/flux1-schnell.safetensors/g' "${workflows_dir}/flux_dev_example.json"
         fi
     fi
 
-    # Carpetas de modelos (y symlink por compatibilidad con "checkpoints")
-    mkdir -p "${COMFYUI_DIR}/models/unet" "${COMFYUI_DIR}/models/vae" "${COMFYUI_DIR}/models/clip"
-    if [[ ! -e "${COMFYUI_DIR}/models/checkpoints" ]]; then
-      ln -s "${COMFYUI_DIR}/models/unet" "${COMFYUI_DIR}/models/checkpoints" || true
-    fi
+    # Carpetas de modelos (todo en checkpoints)
+    mkdir -p "${COMFYUI_DIR}/models/checkpoints"
 
-    provisioning_get_files "${COMFYUI_DIR}/models/unet" "${UNET_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/vae"  "${VAE_MODELS[@]}"
-    provisioning_get_files "${COMFYUI_DIR}/models/clip" "${CLIP_MODELS[@]}"
+    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints" "${CHECKPOINT_MODELS[@]}"
+    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints" "${VAE_MODELS[@]}"
+    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints" "${CLIP_MODELS[@]}"
+    provisioning_get_files "${COMFYUI_DIR}/models/checkpoints" "${LORA_MODELS[@]}"
 
     provisioning_print_end
 }
@@ -104,7 +99,7 @@ function provisioning_get_pip_packages() {
 function provisioning_get_nodes() {
     for repo in "${NODES[@]}"; do
         dir="${repo##*/}"
-        path="${COMFYUI_DIR}/custom_nodes/${dir}"   # <-- slash FIX
+        path="${COMFYUI_DIR}/custom_nodes/${dir}"
         requirements="${path}/requirements.txt"
         if [[ -d $path ]]; then
             if [[ ${AUTO_UPDATE,,} != "false" ]]; then
@@ -125,7 +120,6 @@ function provisioning_get_nodes() {
 }
 
 function provisioning_get_files() {
-    # $1 dest_dir; resto: urls
     if [[ $# -lt 2 ]]; then return 0; fi
     local dir="$1"; shift
     mkdir -p "$dir"
@@ -156,17 +150,6 @@ function provisioning_has_valid_hf_token() {
     [[ "$response" -eq 200 ]]
 }
 
-function provisioning_has_valid_civitai_token() {
-    [[ -n "${CIVITAI_TOKEN:-}" ]] || return 1
-    local url="https://civitai.com/api/v1/models?hidden=1&limit=1"
-    local response
-    response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" \
-        -H "Authorization: Bearer $CIVITAI_TOKEN" \
-        -H "Content-Type: application/json")
-    [[ "$response" -eq 200 ]]
-}
-
-# Download from $1 URL to $2 dir (keeps server filename)
 function provisioning_download() {
     local url="$1"; local destdir="$2"
     local auth_token=""
@@ -182,7 +165,6 @@ function provisioning_download() {
     fi
 }
 
-# Allow user to disable provisioning if they started with a script they didn't want
 if [[ ! -f /.noprovisioning ]]; then
     provisioning_start
 fi
