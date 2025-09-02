@@ -117,17 +117,19 @@ function provisioning_download() {
     # Usa aria2c si está disponible (es mucho más rápido), si no, usa wget como respaldo
     if command -v aria2c &> /dev/null; then
         echo "Descargando con aria2c (rápido)..."
-        if [[ -n $auth_header ]]; then
+        if [[ -n "$auth_header" ]]; then
             # -x 16: usa hasta 16 conexiones por descarga
             # -s 16: divide el archivo en 16 partes
             # -k 1M: tamaño mínimo de cada parte
+            # --dir: directorio de destino
+            # --out: nombre del archivo de salida
             aria2c --console-log-level=error -c -x 16 -s 16 -k 1M --header="$auth_header" --dir="$2" --out="${1##*/}" "$1"
         else
             aria2c --console-log-level=error -c -x 16 -s 16 -k 1M --dir="$2" --out="${1##*/}" "$1"
         fi
     else
         echo "aria2c no encontrado. Usando wget (lento)..."
-        if [[ -n $auth_header ]];then
+        if [[ -n "$auth_header" ]];then
             wget --header="$auth_header" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
         else
             wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
