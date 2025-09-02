@@ -105,8 +105,35 @@ function provisioning_print_header() { printf "\n###############################
 function provisioning_print_end() { printf "\nProvisioning complete:  Application will start now\n\n"; }
 function provisioning_has_valid_hf_token() { [[ -n "$HF_TOKEN" ]] || return 1; url="https://huggingface.co/api/whoami-v2"; response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" -H "Authorization: Bearer $HF_TOKEN" -H "Content-Type: application/json"); if [ "$response" -eq 200 ]; then return 0; else return 1; fi; }
 function provisioning_has_valid_civitai_token() { [[ -n "$CIVITAI_TOKEN" ]] || return 1; url="https://civitai.com/api/v1/models?hidden=1&limit=1"; response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" -H "Authorization: Bearer $CIVITAI_TOKEN" -H "Content-Type: application/json"); if [ "$response" -eq 200 ]; then return 0; else return 1; fi; }
-function provisioning_download() { if [[ -n $HF_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?huggingface\.co(/|$|\?) ]]; then auth_token="$HF_TOKEN"; elif [[ -n $CIVITAI_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?civitai\.com(/|$|\?) ]]; then auth_token="$CIVITAI_TOKEN"; fi; if [[ -n $auth_token ]];then wget --header="Authorization: Bearer $auth_token" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"; else wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"; fi; }
+function provisioning_download() {
+    # Prepara la autenticación si es necesaria
+    local auth_header=""
+    if [[ -n $HF_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?huggingface\.co(/|$|\?) ]]; then
+        auth_header="Authorization: Bearer $HF_TOKEN"
+    elif [[ -n $CIVITAI_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?civitai\.com(/|$|\?) ]]; then
+        auth_header="Authorization: Bearer $CIVITAI_TOKEN"
+    fi
 
+    # Usa aria2c si está disponible (es mucho más rápido), si no, usa wget como respaldo
+    if command -v aria2c &> /dev/null; then
+        echo "Descargando con aria2c (rápido)..."
+        if [[ -n $auth_header ]]; then
+            # -x 16: usa hasta 16 conexiones por descarga
+            # -s 16: divide el archivo en 16 partes
+            # -k 1M: tamaño mínimo de cada parte
+            aria2c --console-log-level=error -c -x 16 -s 16 -k 1M --header="$auth_header" --dir="$2" --out="${1##*/}" "$1"
+        else
+            aria2c --console-log-level=error -c -x 16 -s 16 -k 1M --dir="$2" --out="${1##*/}" "$1"
+        fi
+    else
+        echo "aria2c no encontrado. Usando wget (lento)..."
+        if [[ -n $auth_header ]];then
+            wget --header="$auth_header" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
+        else
+            wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
+        fi
+    fi
+}
 if [[ ! -f /.noprovisioning ]]; then
     provisioning_start
 fi
