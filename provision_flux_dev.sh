@@ -6,7 +6,6 @@ source /venv/main/bin/activate
 COMFYUI_DIR=${WORKSPACE}/ComfyUI
 
 # --- PAQUETES DEL SISTEMA (APT) ---
-# Aquí nos aseguramos de que jq y aria2 se instalen
 APT_PACKAGES=(
     "jq"
     "aria2"
@@ -25,7 +24,6 @@ NODES=(
 
 # --- WORKFLOWS ---
 WORKFLOWS=(
-    "https://gist.githubusercontent.com/robballantyne/f8cb692bdcd89c96c0bd1ec0c969d905/raw/2d969f732d7873f0e1ee23b2625b50f201c722a5/flux_dev_example.json"
     "https://gist.githubusercontent.com/rgd87/566887570415a7f960920d0f509e5399/raw/flux_dev_lora_example.json"
 )
 
@@ -51,16 +49,13 @@ function provisioning_start() {
     provisioning_get_apt_packages
 
     printf "Actualizando ComfyUI y dependencias...\n"
-    cd ${COMFYUI_DIR}
-    git pull
-    pip install -r requirements.txt
+    cd ${COMFYUI_DIR} && git pull && pip install -r requirements.txt
     cd ${WORKSPACE}
 
     provisioning_get_nodes
     provisioning_get_pip_packages
 
     workflows_dir="${COMFYUI_DIR}/user/default/workflows"
-    workflow_file="${workflows_dir}/flux_dev_example.json"
     mkdir -p "${workflows_dir}"
     provisioning_get_files "${workflows_dir}" "${WORKFLOWS[@]}"
 
@@ -77,11 +72,14 @@ function provisioning_start() {
         VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors")
     fi
 
+    # Modificar el workflow JSON
+    local workflow_file="${workflows_dir}/flux_dev_lora_example.json"
     if [ -f "$workflow_file" ]; then
         echo "Modificando workflow JSON con el modelo: ${MODEL_FILENAME}"
         jq --arg model_name "$MODEL_FILENAME" '(.nodes[] | select(.type == "CheckpointLoaderSimple").widgets_values) |= [ $model_name ]' "$workflow_file" > "${workflow_file}.tmp" && mv "${workflow_file}.tmp" "$workflow_file"
     fi
 
+    # Iniciar todas las descargas
     provisioning_get_files "${COMFYUI_DIR}/models/checkpoints" "${CHECKPOINT_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/vae" "${VAE_MODELS[@]}"
     provisioning_get_files "${COMFYUI_DIR}/models/clip" "${CLIP_MODELS[@]}"
