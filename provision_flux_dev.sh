@@ -1,138 +1,217 @@
 #!/bin/bash
-# Provisioning script para ComfyUI + FLUX.1-dev + LoRAs
-# Usa: HF_TOKEN (obligatorio para FLUX.1-dev), PROVISIONING_SCRIPT (URL de este script)
-set -euo pipefail
 
-log() { echo -e "[provision] $*"; }
+source /venv/main/bin/activate
+COMFYUI_DIR=${WORKSPACE}/ComfyUI
 
-# --- Rutas base ---
-WORKSPACE="${WORKSPACE:-/workspace}"
-COMFY_DIR="${WORKSPACE}/ComfyUI"
-CKPT_DIR="${COMFY_DIR}/models/checkpoints"
-CLIP_DIR="${COMFY_DIR}/models/clip"
-T5_DIR="${COMFY_DIR}/models/t5"
-LORA_DIR="${COMFY_DIR}/models/loras"
-TMP_DIR="${WORKSPACE}/.provision_tmp"
+# Packages are installed after nodes so we can fix them...
 
-mkdir -p "$CKPT_DIR" "$CLIP_DIR" "$T5_DIR" "$LORA_DIR" "$TMP_DIR"
+APT_PACKAGES=(
+    #"package-1"
+    #"package-2"
+)
 
-# --- Activar entorno Python principal ---
-if [ -f /venv/main/bin/activate ]; then
-  # shellcheck disable=SC1091
-  . /venv/main/bin/activate
-  log "Entorno /venv/main activado."
-else
-  log "AVISO: no se encontró /venv/main; continúo sin activar venv."
-fi
+PIP_PACKAGES=(
+    #"package-1"
+    #"package-2"
+)
 
-# --- Comprobar huggingface-cli ---
-if ! command -v huggingface-cli >/dev/null 2>&1; then
-  log "Instalando huggingface_hub[cli]..."
-  pip install --no-cache-dir -q "huggingface_hub[cli]"
-fi
+NODES=(
+    #"https://github.com/ltdrdata/ComfyUI-Manager"
+    #"https://github.com/cubiq/ComfyUI_essentials"
+)
 
-# --- Comprobar HF_TOKEN ---
-if [ "${HF_TOKEN:-}" = "" ]; then
-  log "ERROR: HF_TOKEN no está definido. Define HF_TOKEN en las variables de entorno de la instancia."
-  exit 1
-fi
+WORKFLOWS=(
+    "https://gist.githubusercontent.com/robballantyne/f8cb692bdcd89c96c0bd1ec0c969d905/raw/2d969f732d7873f0e1ee23b2625b50f201c722a5/flux_dev_example.json"
+)
 
-# --- Descargar FLUX.1-dev ---
-# Repo oficial: black-forest-labs/FLUX.1-dev
-# Descargamos todos los .safetensors + metadatos útiles al directorio de checkpoints.
-log "Descargando FLUX.1-dev desde Hugging Face..."
-huggingface-cli download \
-  black-forest-labs/FLUX.1-dev \
-  --token "$HF_TOKEN" \
-  --local-dir "$TMP_DIR/flux1-dev" \
-  --include "*.safetensors" "*.json" "*.txt" || {
-    log "ERROR descargando FLUX.1-dev. ¿Aceptaste la licencia y es válido el HF_TOKEN?"
-    exit 1
-  }
+CLIP_MODELS=(
+    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors"
+    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
+)
 
-# Mover el/los .safetensors al directorio de checkpoints (nombre estándar: flux1-dev.safetensors si existe)
-if compgen -G "$TMP_DIR/flux1-dev/*.safetensors" > /dev/null; then
-  # Si existe un archivo llamado exactamente flux1-dev.safetensors, usarlo; si no, mover todos.
-  if [ -f "$TMP_DIR/flux1-dev/flux1-dev.safetensors" ]; then
-    mv -f "$TMP_DIR/flux1-dev/flux1-dev.safetensors" "$CKPT_DIR/flux1-dev.safetensors"
-    log "Checkpoint colocado en $CKPT_DIR/flux1-dev.safetensors"
-  else
-    # Mueve cualquier .safetensors que haya (por compatibilidad con futuras publicaciones)
-    mv -f "$TMP_DIR/flux1-dev/"*.safetensors "$CKPT_DIR/"
-    log "Checkpoints colocados en $CKPT_DIR/"
-  fi
-else
-  log "ERROR: no se encontraron .safetensors en la descarga de FLUX.1-dev."
-  exit 1
-fi
+UNET_MODELS=(
+)
 
-# Guardar también metadatos útiles en el propio repo local (opcional)
-mkdir -p "$CKPT_DIR/flux1-dev-meta"
-shopt -s nullglob
-for f in "$TMP_DIR/flux1-dev/"*.json "$TMP_DIR/flux1-dev/"*.txt; do
-  cp -f "$f" "$CKPT_DIR/flux1-dev-meta/" || true
-done
-shopt -u nullglob
+VAE_MODELS=(
+)
 
-# --- (Opcional) Encoders / tokenizers ---
-# Muchos workflows de ComfyUI con FLUX funcionan solo con el checkpoint.
-# Si algún workflow te pide encoders específicos, descomenta y ajusta las líneas siguientes.
-#
-# 1) Ejemplo: descargar CLIP al directorio models/clip
-# log "Descargando encoder CLIP (ejemplo, ajusta al repo/archivo correcto si tu workflow lo pide)..."
-# huggingface-cli download \
-#   openai/clip-vit-large-patch14 \
-#   --local-dir "$CLIP_DIR/clip-vit-large-patch14" \
-#   --include "*.json" "*.txt" "*.bin" "*.pt"
-#
-# 2) Ejemplo: descargar T5 al directorio models/t5
-# log "Descargando T5 (ejemplo, ajusta al repo/archivo correcto si tu workflow lo pide)..."
-# huggingface-cli download \
-#   google/t5-v1_1-xxl \
-#   --local-dir "$T5_DIR/t5-v1_1-xxl" \
-#   --include "*.json" "*.txt" "*.model" "*.sentencepiece" "*.bin"
+# === NUEVO: LoRA ===
+# Añade aquí LoRAs fijas si quieres (opcional). También puedes usar LORA_URLS o /workspace/lora_urls.txt
+LORA_MODELS=(
+    # "https://huggingface.co/usuario/repo/resolve/main/mi_lora.safetensors"
+    # "https://civitai.com/api/download/models/12345"
+)
 
-# --- Descarga de LoRAs definidas por el usuario ---
-# Añade URLs (HF raw, Civitai, etc.) a la variable LORA_URLS como array o como cadena separada por espacios.
-# Ejemplo en Vast (Environment Variables):
-# LORA_URLS="https://huggingface.co/usuario/repo/resolve/main/mi_lora.safetensors https://civitai.com/api/download/models/12345"
-#
-# También puedes crear un archivo lista en ${WORKSPACE}/lora_urls.txt y poner una URL por línea.
-download_lora() {
-  local url="$1"
-  local fname
-  fname="$(basename "${url%%\?*}")"  # quita querystring para nombres limpios
-  if [ -z "$fname" ] || [[ "$fname" != *.safetensors ]]; then
-    # Nombre de reserva si el endpoint no revela el nombre
-    fname="lora_$(date +%s%N).safetensors"
-  fi
-  log "Descargando LoRA: $url"
-  # Intentar con curl y fallback a wget
-  if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --retry 5 --retry-delay 3 -o "$LORA_DIR/$fname" "$url"
-  else
-    wget --tries=5 --retry-connrefused --waitretry=3 -O "$LORA_DIR/$fname" "$url"
-  fi
-  log "LoRA guardada en $LORA_DIR/$fname"
+### DO NOT EDIT BELOW HERE UNLESS YOU KNOW WHAT YOU ARE DOING ###
+
+function provisioning_start() {
+    provisioning_print_header
+    provisioning_get_apt_packages
+    provisioning_get_nodes
+    provisioning_get_pip_packages
+
+    workflows_dir="${COMFYUI_DIR}/user/default/workflows"
+    mkdir -p "${workflows_dir}"
+    provisioning_get_files \
+        "${workflows_dir}" \
+        "${WORKFLOWS[@]}"
+
+    # Get licensed models if HF_TOKEN set & valid
+    if provisioning_has_valid_hf_token; then
+        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors")
+        VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors")
+    else
+        UNET_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors")
+        VAE_MODELS+=("https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors")
+        sed -i 's/flux1-dev\.safetensors/flux1-schnell.safetensors/g' "${workflows_dir}/flux_dev_example.json"
+    fi
+
+    provisioning_get_files \
+        "${COMFYUI_DIR}/models/unet" \
+        "${UNET_MODELS[@]}"
+    provisioning_get_files \
+        "${COMFYUI_DIR}/models/vae" \
+        "${VAE_MODELS[@]}"
+    provisioning_get_files \
+        "${COMFYUI_DIR}/models/clip" \
+        "${CLIP_MODELS[@]}"
+
+    # === NUEVO: agregar LoRAs desde env o archivo ===
+    loras_dir="${COMFYUI_DIR}/models/loras"
+    mkdir -p "${loras_dir}"
+
+    # 1) Desde variable LORA_URLS (separadas por espacio o salto de línea)
+    if [[ -n "${LORA_URLS}" ]]; then
+        # convertir espacios a saltos de línea
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            LORA_MODELS+=("$line")
+        done < <(printf "%s" "$LORA_URLS" | tr ' ' '\n')
+    fi
+
+    # 2) Desde archivo /workspace/lora_urls.txt (una URL por línea)
+    if [[ -f "${WORKSPACE}/lora_urls.txt" ]]; then
+        while IFS= read -r url; do
+            [[ -z "$url" ]] && continue
+            LORA_MODELS+=("$url")
+        done < "${WORKSPACE}/lora_urls.txt"
+    fi
+
+    # Descargar LoRAs si hay alguna
+    provisioning_get_files \
+        "${loras_dir}" \
+        "${LORA_MODELS[@]}"
+
+    provisioning_print_end
 }
 
-# 1) LORA_URLS desde variable de entorno (espacios o saltos de línea)
-if [ "${LORA_URLS:-}" != "" ]; then
-  # Convertir en líneas
-  printf "%s" "$LORA_URLS" | tr ' ' '\n' | while read -r line; do
-    [ -z "$line" ] && continue
-    download_lora "$line"
-  done
+function provisioning_get_apt_packages() {
+    if [[ -n $APT_PACKAGES ]]; then
+            sudo $APT_INSTALL ${APT_PACKAGES[@]}
+    fi
+}
+
+function provisioning_get_pip_packages() {
+    if [[ -n $PIP_PACKAGES ]]; then
+            pip install --no-cache-dir ${PIP_PACKAGES[@]}
+    fi
+}
+
+function provisioning_get_nodes() {
+    for repo in "${NODES[@]}"; do
+        dir="${repo##*/}"
+        path="${COMFYUI_DIR}custom_nodes/${dir}"
+        requirements="${path}/requirements.txt"
+        if [[ -d $path ]]; then
+            if [[ ${AUTO_UPDATE,,} != "false" ]]; then
+                printf "Updating node: %s...\n" "${repo}"
+                ( cd "$path" && git pull )
+                if [[ -e $requirements ]]; then
+                   pip install --no-cache-dir -r "$requirements"
+                fi
+            fi
+        else
+            printf "Downloading node: %s...\n" "${repo}"
+            git clone "${repo}" "${path}" --recursive
+            if [[ -e $requirements ]]; then
+                pip install --no-cache-dir -r "${requirements}"
+            fi
+        fi
+    done
+}
+
+function provisioning_get_files() {
+    if [[ -z $2 ]]; then return 1; fi
+    
+    dir="$1"
+    mkdir -p "$dir"
+    shift
+    arr=("$@")
+    printf "Downloading %s model(s) to %s...\n" "${#arr[@]}" "$dir"
+    for url in "${arr[@]}"; do
+        printf "Downloading: %s\n" "${url}"
+        provisioning_download "${url}" "${dir}"
+        printf "\n"
+    done
+}
+
+function provisioning_print_header() {
+    printf "\n##############################################\n#                                            #\n#          Provisioning container            #\n#                                            #\n#         This will take some time           #\n#                                            #\n# Your container will be ready on completion #\n#                                            #\n##############################################\n\n"
+}
+
+function provisioning_print_end() {
+    printf "\nProvisioning complete:  Application will start now\n\n"
+}
+
+function provisioning_has_valid_hf_token() {
+    [[ -n "$HF_TOKEN" ]] || return 1
+    url="https://huggingface.co/api/whoami-v2"
+
+    response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" \
+        -H "Authorization: Bearer $HF_TOKEN" \
+        -H "Content-Type: application/json")
+
+    # Check if the token is valid
+    if [ "$response" -eq 200 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+function provisioning_has_valid_civitai_token() {
+    [[ -n "$CIVITAI_TOKEN" ]] || return 1
+    url="https://civitai.com/api/v1/models?hidden=1&limit=1"
+
+    response=$(curl -o /dev/null -s -w "%{http_code}" -X GET "$url" \
+        -H "Authorization: Bearer $CIVITAI_TOKEN" \
+        -H "Content-Type: application/json")
+
+    # Check if the token is valid
+    if [ "$response" -eq 200 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Download from $1 URL to $2 file path
+function provisioning_download() {
+    if [[ -n $HF_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?huggingface\.co(/|$|\?) ]]; then
+        auth_token="$HF_TOKEN"
+    elif 
+        [[ -n $CIVITAI_TOKEN && $1 =~ ^https://([a-zA-Z0-9_-]+\.)?civitai\.com(/|$|\?) ]]; then
+        auth_token="$CIVITAI_TOKEN"
+    fi
+    if [[ -n $auth_token ]];then
+        wget --header="Authorization: Bearer $auth_token" -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
+    else
+        wget -qnc --content-disposition --show-progress -e dotbytes="${3:-4M}" -P "$2" "$1"
+    fi
+}
+
+# Allow user to disable provisioning if they started with a script they didn't want
+if [[ ! -f /.noprovisioning ]]; then
+    provisioning_start
 fi
 
-# 2) LORA_URLS desde archivo ${WORKSPACE}/lora_urls.txt (una URL por línea)
-if [ -f "$WORKSPACE/lora_urls.txt" ]; then
-  while IFS= read -r url; do
-    [ -z "$url" ] && continue
-    download_lora "$url"
-  done < "$WORKSPACE/lora_urls.txt"
-fi
-
-# --- Limpieza ---
-rm -rf "$TMP_DIR"
-log "Provisioning completado. FLUX.1-dev y LoRAs listos."
